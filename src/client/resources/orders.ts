@@ -4,6 +4,7 @@
  * Covers operations tagged "Orders" and "Deliveries" in the bexio API docs
  * (https://docs.bexio.com/#tag/Orders, https://docs.bexio.com/#tag/Deliveries).
  */
+import { positionsToReferences, type PositionReference } from './position-refs.js';
 import type { BexioHttp } from '../http.js';
 import type { FetchedFile, ListParams, SearchCriteria, SuccessResponse } from '../types.js';
 
@@ -340,19 +341,47 @@ export class OrdersApi {
 
   /**
    * Create delivery from order. Omit `positions` to copy all positions of the order.
-   * @see v2CreateDeliveryFromOrder — scope `kb_order_edit,kb_delivery_edit`
+   *
+   * Same omitted-`positions` behaviour as {@link createInvoice}: the spec
+   * allows omitting `positions` to take over all positions of the order, but
+   * the live API rejects the resulting empty body with a 415, so this
+   * fetches the order (one extra GET, requiring `kb_order_show`) and sends
+   * references to all of its positions when `payload.positions` is omitted.
+   * Same `{}`-body bug pattern as `createInvoice`, fixed by symmetry; not
+   * itself live-verified. An explicit `payload.positions`, including `[]`,
+   * is sent through as-is.
+   * @see v2CreateDeliveryFromOrder — scope `kb_order_edit,kb_delivery_edit` (+ `kb_order_show` when positions is omitted)
    */
-  createDelivery(orderId: number, payload?: CreateFromDocumentPayload): Promise<Delivery> {
-    return this.http.post(`/2.0/kb_order/${orderId}/delivery`, { body: payload ?? {} });
+  async createDelivery(orderId: number, payload?: CreateFromDocumentPayload): Promise<Delivery> {
+    const positions = payload?.positions ?? (await this.allPositionReferences(orderId));
+    return this.http.post(`/2.0/kb_order/${orderId}/delivery`, { body: { positions } });
   }
 
   /**
    * Create invoice from order. Omit `positions` to copy all positions of the order.
    * Returns the created invoice (see the invoices module for its shape).
-   * @see v2CreateInvoiceFromOrder — scope `kb_order_edit,kb_invoice_edit`
+   *
+   * The spec allows omitting `positions` to take over all positions of the
+   * order, but the live API rejects the resulting empty body with a 415; when
+   * `payload.positions` is omitted this fetches the order (one extra GET,
+   * requiring `kb_order_show` in addition to the scope below) and sends
+   * references to all of its positions instead (see {@link positionsToReferences}).
+   * Fixed by symmetry with the live-verified quote→invoice path (quotes.ts);
+   * this order→invoice path is not itself live-verified. An explicit
+   * `payload.positions`, including `[]`, is sent through as-is without the
+   * extra GET; that passthrough path (and `[]` in particular) is not itself
+   * live-verified either.
+   * @see v2CreateInvoiceFromOrder — scope `kb_order_edit,kb_invoice_edit` (+ `kb_order_show` when positions is omitted)
    */
-  createInvoice(orderId: number, payload?: CreateFromDocumentPayload): Promise<unknown> {
-    return this.http.post(`/2.0/kb_order/${orderId}/invoice`, { body: payload ?? {} });
+  async createInvoice(orderId: number, payload?: CreateFromDocumentPayload): Promise<unknown> {
+    const positions = payload?.positions ?? (await this.allPositionReferences(orderId));
+    return this.http.post(`/2.0/kb_order/${orderId}/invoice`, { body: { positions } });
+  }
+
+  /** Resolves all positions of an order as `{id, type, amount}` references. */
+  private async allPositionReferences(orderId: number): Promise<PositionReference[]> {
+    const order = await this.get(orderId);
+    return positionsToReferences(order.positions);
   }
 }
 

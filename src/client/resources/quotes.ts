@@ -4,6 +4,7 @@
  * Covers operations tagged "Quotes" in the bexio API docs
  * (https://docs.bexio.com/#tag/Quotes).
  */
+import { positionsToReferences, type PositionReference } from './position-refs.js';
 import type { BexioHttp } from '../http.js';
 import type { FetchedFile, ListParams, SearchCriteria, SuccessResponse } from '../types.js';
 
@@ -347,18 +348,43 @@ export class QuotesApi {
 
   /**
    * Create invoice from quote. Returns the created invoice.
-   * @see v2CreateInvoiceFromQuote — scope `kb_offer_edit,kb_invoice_edit`
+   *
+   * The spec allows omitting `positions` to take over all positions of the
+   * quote, but the live API rejects the resulting empty body with a 415
+   * (live-verified 25.09.2026, reproduced 3x on v0.3.3); when
+   * `payload.positions` is omitted this fetches the quote (one extra GET,
+   * requiring `kb_offer_show` in addition to the scope below) and sends
+   * references to all of its positions instead (see {@link positionsToReferences}).
+   * An explicit `payload.positions`, including `[]`, is sent through as-is
+   * without the extra GET; that passthrough path (and `[]` in particular) is
+   * not itself live-verified.
+   * @see v2CreateInvoiceFromQuote — scope `kb_offer_edit,kb_invoice_edit` (+ `kb_offer_show` when positions is omitted)
    */
-  createInvoice(quoteId: number, payload?: QuoteToDocumentRequest): Promise<Record<string, unknown>> {
-    return this.http.post(`/2.0/kb_offer/${quoteId}/invoice`, { body: { ...payload } });
+  async createInvoice(quoteId: number, payload?: QuoteToDocumentRequest): Promise<Record<string, unknown>> {
+    const positions = payload?.positions ?? (await this.allPositionReferences(quoteId));
+    return this.http.post(`/2.0/kb_offer/${quoteId}/invoice`, { body: { positions } });
   }
 
   /**
    * Create order from quote. Returns the created order.
-   * @see v2CreateOrderFromQuote — scope `kb_offer_edit,kb_order_edit`
+   *
+   * Same omitted-`positions` behaviour as {@link createInvoice}: the live API
+   * rejects an empty body with a 415, so this fetches the quote (one extra
+   * GET, requiring `kb_offer_show`) and sends references to all of its
+   * positions when `payload.positions` is omitted. Fixed by symmetry with the
+   * live-verified quote→invoice path; not itself live-verified. An explicit
+   * `payload.positions`, including `[]`, is sent through as-is.
+   * @see v2CreateOrderFromQuote — scope `kb_offer_edit,kb_order_edit` (+ `kb_offer_show` when positions is omitted)
    */
-  createOrder(quoteId: number, payload?: QuoteToDocumentRequest): Promise<Record<string, unknown>> {
-    return this.http.post(`/2.0/kb_offer/${quoteId}/order`, { body: { ...payload } });
+  async createOrder(quoteId: number, payload?: QuoteToDocumentRequest): Promise<Record<string, unknown>> {
+    const positions = payload?.positions ?? (await this.allPositionReferences(quoteId));
+    return this.http.post(`/2.0/kb_offer/${quoteId}/order`, { body: { positions } });
+  }
+
+  /** Resolves all positions of a quote as `{id, type, amount}` references. */
+  private async allPositionReferences(quoteId: number): Promise<PositionReference[]> {
+    const quote = await this.get(quoteId);
+    return positionsToReferences(quote.positions);
   }
 }
 
